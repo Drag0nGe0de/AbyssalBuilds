@@ -62,8 +62,10 @@ jobs:
 
       - name: Get version
         run: |
-          VERSION=$(grep -m1 'set(Launcher_VERSION_NAME "' CMakeLists.txt | sed 's/.*"\(.*\)".*/\1/')
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          MAJOR=$(grep -m1 '^set(Launcher_VERSION_MAJOR ' CMakeLists.txt | grep -o '[0-9][0-9]*')
+          MINOR=$(grep -m1 '^set(Launcher_VERSION_MINOR ' CMakeLists.txt | grep -o '[0-9][0-9]*')
+          PATCH=$(grep -m1 '^set(Launcher_VERSION_PATCH ' CMakeLists.txt | grep -o '[0-9][0-9]*')
+          echo "VERSION=$MAJOR.$MINOR.$PATCH" >> "$GITHUB_ENV"
 
       - name: Package
         shell: bash
@@ -108,6 +110,15 @@ jobs:
           else
             echo ":warning: No Sparkle key configured; skipping signature." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Save build output artifact (safety net)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            AbyssalLauncher-*.dmg
+            sparkle-dmg-signature.txt
+          retention-days: 1
 
       - name: Upload to draft release
         shell: bash
