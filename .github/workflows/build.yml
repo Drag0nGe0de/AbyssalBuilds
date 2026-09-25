@@ -68,16 +68,22 @@ jobs:
       - name: Package
         shell: bash
         env:
-          APP_DIR: ${{ secrets.APP_DIR }}
           APP_DISPLAY: ${{ secrets.APP_DISPLAY }}
-          BIN_NAME: ${{ secrets.BIN_NAME }}
+          ART_PREFIX: ${{ secrets.ART_PREFIX }}
         run: |
           cmake --install build --config "$BUILD_TYPE"
 
           cd install
-          chmod +x "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
-          sudo codesign --sign '-' --deep --force --entitlements ../program_info/AdhocSignedApp.entitlements --options runtime "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
-          mv "${APP_DIR}" "${APP_DISPLAY}.app"
+          # Discovery: the installed bundle/binary names are whatever CMake
+          # produced -- never assume a specific casing or spelling.
+          echo "Installed bundles:"
+          ls -d *.app
+          APP_BUNDLE="$(ls -d *.app | head -n1)"
+          BIN_NAME_DISCOVERED="$(ls "$APP_BUNDLE/Contents/MacOS" | head -n1)"
+          BIN_PATH="$APP_BUNDLE/Contents/MacOS/$BIN_NAME_DISCOVERED"
+          chmod +x "$BIN_PATH"
+          sudo codesign --sign '-' --deep --force --entitlements ../program_info/AdhocSignedApp.entitlements --options runtime "$BIN_PATH"
+          mv "$APP_BUNDLE" "${APP_DISPLAY}.app"
 
           mkdir -p src
           cp -R "${APP_DISPLAY}.app" src/
@@ -87,7 +93,7 @@ jobs:
               -volname "${APP_DISPLAY} ${VERSION}" \
               -srcfolder src \
               -ov -format ULMO \
-              "../${APP_DIR%.app}.dmg"
+              "../${ART_PREFIX}.dmg"
 
       - name: Make Sparkle signature
         shell: bash
