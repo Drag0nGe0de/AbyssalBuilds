@@ -1,0 +1,122 @@
+name: Build
+
+# CI sandbox: builds a private-source macOS app and uploads the result to a
+# draft release on the source repo. No source code lives in this repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: Type of build (Debug or Release)
+        type: string
+        default: Release
+      tag:
+        description: Draft release tag to upload assets to
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  macos:
+    name: Build (macOS universal)
+    runs-on: macos-26
+    env:
+      BUILD_TYPE: ${{ inputs.build-type }}
+      CMAKE_PRESET: macos_universal
+      MACOSX_DEPLOYMENT_TARGET: 12.0
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.SRC_REPO }}
+          token: ${{ secrets.SRC_TOKEN }}
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install ninja extra-cmake-modules temurin@17 mono
+
+      - name: Set JAVA_HOME
+        run: echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+
+      - name: Setup vcpkg environment
+        run: echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          aqtversion: "==3.1.*"
+          version: "6.9.3"
+          modules: qtimageformats qtnetworkauth
+
+      - name: Configure project
+        run: cmake --preset "$CMAKE_PRESET"
+
+      - name: Run build
+        run: cmake --build --preset "$CMAKE_PRESET" --config "$BUILD_TYPE"
+
+      - name: Run tests
+        run: ctest --preset "$CMAKE_PRESET" --build-config "$BUILD_TYPE"
+
+      - name: Get version
+        run: |
+          VERSION=$(grep -m1 'set(Launcher_VERSION_NAME "' CMakeLists.txt | sed 's/.*"\(.*\)".*/\1/')
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Package
+        shell: bash
+        env:
+          APP_DIR: ${{ secrets.APP_DIR }}
+          APP_DISPLAY: ${{ secrets.APP_DISPLAY }}
+          BIN_NAME: ${{ secrets.BIN_NAME }}
+        run: |
+          cmake --install build --config "$BUILD_TYPE"
+
+          cd install
+          chmod +x "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
+          sudo codesign --sign '-' --deep --force --entitlements ../program_info/AdhocSignedApp.entitlements --options runtime "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
+          mv "${APP_DIR}" "${APP_DISPLAY}.app"
+
+          mkdir -p src
+          cp -R "${APP_DISPLAY}.app" src/
+          ln -s /Applications src/
+
+          hdiutil create \
+              -volname "${APP_DISPLAY} ${VERSION}" \
+              -srcfolder src \
+              -ov -format ULMO \
+              "../${APP_DIR%.app}.dmg"
+
+      - name: Make Sparkle signature
+        shell: bash
+        env:
+          SPARKLE_KEY: ${{ secrets.SPARKLE_ED25519_KEY }}
+          ART_PREFIX: ${{ secrets.ART_PREFIX }}
+        run: |
+          if [ -n "$SPARKLE_KEY" ]; then
+            echo "$SPARKLE_KEY" > ed25519-priv.pem
+            /opt/homebrew/opt/openssl@3/bin/openssl pkeyutl -sign -rawin -in "${ART_PREFIX}.dmg" -inkey ed25519-priv.pem | openssl base64 | tr -d '\n' > sparkle-dmg-signature.txt
+            rm ed25519-priv.pem
+          else
+            echo ":warning: No Sparkle key configured; skipping signature." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+          SRC_REPO: ${{ secrets.SRC_REPO }}
+          TAG: ${{ inputs.tag }}
+          ART_PREFIX: ${{ secrets.ART_PREFIX }}
+        run: |
+          if [ ! -f "${ART_PREFIX}.dmg" ]; then
+            echo "::error::DMG was not produced"
+            exit 1
+          fi
+          cp "${ART_PREFIX}.dmg" "${ART_PREFIX}-${VERSION}-macOS-universal.dmg"
+          gh release upload "$TAG" \
+            "${ART_PREFIX}-${VERSION}-macOS-universal.dmg" \
+            "sparkle-dmg-signature.txt" \
+            --repo "$SRC_REPO" --clobber
