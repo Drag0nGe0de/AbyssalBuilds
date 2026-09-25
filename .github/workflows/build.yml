@@ -111,29 +111,12 @@ jobs:
             echo ":warning: No Sparkle key configured; skipping signature." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Save build output artifact (safety net)
+      - name: Save build output artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-output
           path: |
-            AbyssalLauncher-*.dmg
+            *.dmg
             sparkle-dmg-signature.txt
           retention-days: 1
-
-      - name: Upload to draft release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
-          SRC_REPO: ${{ secrets.SRC_REPO }}
-          TAG: ${{ inputs.tag }}
-          ART_PREFIX: ${{ secrets.ART_PREFIX }}
-        run: |
-          if [ ! -f "${ART_PREFIX}.dmg" ]; then
-            echo "::error::DMG was not produced"
-            exit 1
-          fi
-          cp "${ART_PREFIX}.dmg" "${ART_PREFIX}-${VERSION}-macOS-universal.dmg"
-          gh release upload "$TAG" \
-            "${ART_PREFIX}-${VERSION}-macOS-universal.dmg" \
-            "sparkle-dmg-signature.txt" \
-            --repo "$SRC_REPO" --clobber
+          if-no-files-found: error
