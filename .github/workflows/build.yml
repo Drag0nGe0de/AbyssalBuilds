@@ -111,6 +111,49 @@ jobs:
             echo ":warning: No Sparkle key configured; skipping signature." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: QA screenshots
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set +e
+          APP_BUNDLE="$(ls -d install/*.app | head -n1)"
+          BIN_PATH="$APP_BUNDLE/Contents/MacOS/$(ls "$APP_BUNDLE/Contents/MacOS" | head -n1)"
+          mkdir -p qa-shots
+          # Built-in harness: renders every page (Qt-side) and stays up for a
+          # while so the native-chrome capture below can run before quit.
+          AURORA_SHOTS="$PWD/qa-shots" "$BIN_PATH" >/dev/null 2>&1 &
+          APP_PID=$!
+          # wait for the harness grabs, then capture the ON-SCREEN window
+          # including the native title bar (screencapture -l <windowid>)
+          sleep 8
+          APP_PID="$APP_PID" python3 - <<'PYEOF' || true
+          import os, subprocess
+          try:
+              import Quartz
+          except Exception:
+              raise SystemExit(0)
+          pid = int(os.environ["APP_PID"])
+          wins = Quartz.CGWindowListCopyWindowInfo(
+              Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+              Quartz.kCGNullWindowID)
+          for w in wins:
+              if w.get('kCGWindowOwnerPID') == pid:
+                  wid = w['kCGWindowNumber']
+                  subprocess.run(['screencapture', '-o', '-x', '-l' + str(wid), 'qa-shots/window-native.png'])
+                  break
+          PYEOF
+          sleep 6
+          kill "$APP_PID" 2>/dev/null
+          ls -la qa-shots || true
+
+      - name: Upload QA screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-shots
+          path: qa-shots
+          retention-days: 3
+          if-no-files-found: ignore
+
       - name: Save build output artifact
         uses: actions/upload-artifact@v4
         with:
