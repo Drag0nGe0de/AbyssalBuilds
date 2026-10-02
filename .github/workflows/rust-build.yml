@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag the binaries are for (e.g. v13.0.0-rust.1)"
+        description: "Release tag the binaries are for (e.g. v13.0.0-rust.2)"
         required: true
       branch:
         description: "Branch of the source repository to build"
         required: false
-        default: "TxLauncher"
+        default: "rust"
 
 permissions:
   contents: read
@@ -33,27 +33,31 @@ jobs:
         run: |
           rustc --version
           cargo --version
+          java -version 2>&1 | head -1 || true
 
       - name: Add Apple targets
         shell: bash
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
+      - name: Unit tests (core)
+        shell: bash
+        working-directory: source/rust
+        run: cargo test --locked
+
       - name: Build (arm64)
         shell: bash
-        working-directory: source
-        run: |
-          cargo build --release --target aarch64-apple-darwin
+        working-directory: source/rust
+        run: cargo build --release --locked --target aarch64-apple-darwin
 
       - name: Build (x86_64)
         shell: bash
-        working-directory: source
-        run: |
-          cargo build --release --target x86_64-apple-darwin
+        working-directory: source/rust
+        run: cargo build --release --locked --target x86_64-apple-darwin
 
       - name: Merge into a universal binary
         shell: bash
-        working-directory: source
+        working-directory: source/rust
         run: |
           lipo -create \
             target/aarch64-apple-darwin/release/abyssallauncher \
@@ -61,15 +65,40 @@ jobs:
             -output abyssallauncher
           lipo -info abyssallauncher
 
+      - name: Compile the launcher java helpers
+        shell: bash
+        working-directory: source
+        run: |
+          mkdir -p javac_out/newlaunch javac_out/legacy javac_out/check
+          javac -source 8 -target 8 -d javac_out/check libraries/javacheck/JavaCheck.java 2>/dev/null \
+            || javac -d javac_out/check libraries/javacheck/JavaCheck.java
+          (cd libraries/launcher && find . -name "*.java" ! -path "./legacy/*" > ../newlaunch.srcs)
+          javac -d javac_out/newlaunch @newlaunch.srcs -sourcepath libraries/launcher
+          jar cf jars-staging-JavaCheck.jar -C javac_out/check .
+          jar cf jars-staging-NewLaunch.jar -C javac_out/newlaunch .
+          mkdir -p javac_out/legacy_src && cp -r libraries/launcher/legacy/* javac_out/legacy_src/ 2>/dev/null || true
+          cp libraries/launcher/net javac_out/ -R 2>/dev/null || true
+          (cd libraries/launcher && find legacy net -name "*.java" > ../legacy.srcs)
+          javac -cp jars-staging-NewLaunch.jar -d javac_out/legacy @legacy.srcs -sourcepath libraries/launcher
+          jar cf jars-staging-NewLaunchLegacy.jar -C javac_out/newlaunch . -C javac_out/legacy .
+
       - name: Bundle the app
         shell: bash
         working-directory: source
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          mkdir -p "Abyssal Launcher.app/Contents/MacOS" "Abyssal Launcher.app/Contents/Resources"
-          cp abyssallauncher "Abyssal Launcher.app/Contents/MacOS/abyssallauncher"
-          cp program_info/abyssallauncher.icns "Abyssal Launcher.app/Contents/Resources/abyssallauncher.icns"
-          cat > "Abyssal Launcher.app/Contents/Info.plist" <<PLIST
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          APP="Abyssal Launcher.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/jars"
+          cp rust/abyssallauncher "$APP/Contents/MacOS/abyssallauncher"
+          cp rust/assets/appicon.png "$APP/Contents/Resources/appicon.png"
+          cp -r rust/assets/icons "$APP/Contents/Resources/icons"
+          cp -r rust/assets/fonts "$APP/Contents/Resources/fonts"
+          mkdir -p "$APP/Contents/Resources/instance_icons"
+          cp rust/assets/instance_icons/* "$APP/Contents/Resources/instance_icons/" || true
+          cp jars-staging-NewLaunch.jar "$APP/Contents/Resources/jars/NewLaunch.jar"
+          cp jars-staging-NewLaunchLegacy.jar "$APP/Contents/Resources/jars/NewLaunchLegacy.jar"
+          cp jars-staging-JavaCheck.jar "$APP/Contents/Resources/jars/JavaCheck.jar"
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -78,7 +107,7 @@ jobs:
             <key>CFBundleDisplayName</key><string>Abyssal Launcher</string>
             <key>CFBundleIdentifier</key><string>org.abyssallauncher.AbyssalLauncher</string>
             <key>CFBundleExecutable</key><string>abyssallauncher</string>
-            <key>CFBundleIconFile</key><string>abyssallauncher</string>
+            <key>CFBundleIconFile</key><string>appicon</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
@@ -88,17 +117,45 @@ jobs:
           </dict>
           </plist>
           PLIST
-          codesign --force --sign - "Abyssal Launcher.app"
+          # volume icon for the dmg
+          iconutil -c icns --icon "$APP/Contents/Resources/appicon.png" 2>/dev/null || true
+          codesign --force --sign - "$APP"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Package the dmg
+      - name: Memory smoke test (launch, sample RSS, quit)
+        shell: bash
+        working-directory: source
+        run: |
+          APP="Abyssal Launcher.app"
+          # run in a scratch data dir so CI does not touch the real profile
+          export ABYSSALLAUNCHER_DATA_DIR="$RUNNER_TEMP/abyssal-data"
+          "$APP/Contents/MacOS/abyssallauncher" --version || true
+          "$APP/Contents/MacOS/abyssallauncher" &
+          APP_PID=$!
+          sleep 6
+          RSS_KB=$(ps -o rss= -p $APP_PID 2>/dev/null | tail -1 | tr -d ' ')
+          echo "RSS_KB=${RSS_KB:-unknown}" >> "$GITHUB_ENV"
+          if [ -n "$RSS_KB" ]; then
+            echo "RSS_MB=$((RSS_KB / 1024)) MB" >> "$GITHUB_ENV"
+          fi
+          kill $APP_PID 2>/dev/null || true
+          sleep 1
+          echo "Launcher RSS: ${RSS_KB:-unknown} KB"
+
+      - name: Package the dmg (with Applications symlink)
         shell: bash
         working-directory: source
         run: |
           TAG="${{ inputs.tag }}"
           OUT="AbyssalLauncher-Rust-${TAG}-macOS-universal.dmg"
-          hdiutil create -volname "Abyssal Launcher" -srcfolder "Abyssal Launcher.app" -ov -format UDZO "$OUT"
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$STAGE"
+          cp -R "Abyssal Launcher.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Abyssal Launcher" -srcfolder "$STAGE" -ov -format UDZO "$OUT"
           shasum -a 256 "$OUT" > "$OUT.sha256"
           echo "DMG=$OUT" >> "$GITHUB_ENV"
+          echo "SHA256=$(cut -d' ' -f1 "$OUT.sha256")" >> "$GITHUB_ENV"
 
       - name: Upload the artifact
         uses: actions/upload-artifact@v4
@@ -109,3 +166,11 @@ jobs:
             source/${{ env.DMG }}.sha256
           if-no-files-found: error
           retention-days: 7
+
+      - name: Build summary
+        shell: bash
+        run: |
+          echo "Tag: ${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Source: ${{ secrets.SRC_REPO }} @ ${{ env.SOURCE_SHA }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Universal binary + launcher jars bundled" >> "$GITHUB_STEP_SUMMARY"
+          echo "Launcher RSS at startup: ${{ env.RSS_MB || 'not measured' }}" >> "$GITHUB_STEP_SUMMARY"
