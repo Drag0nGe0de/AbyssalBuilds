@@ -69,18 +69,25 @@ jobs:
         shell: bash
         working-directory: source
         run: |
-          mkdir -p javac_out/newlaunch javac_out/legacy javac_out/check
-          javac -source 8 -target 8 -d javac_out/check libraries/javacheck/JavaCheck.java 2>/dev/null \
-            || javac -d javac_out/check libraries/javacheck/JavaCheck.java
-          (cd libraries/launcher && find . -name "*.java" ! -path "./legacy/*" > ../newlaunch.srcs)
-          javac -d javac_out/newlaunch @newlaunch.srcs -sourcepath libraries/launcher
-          jar cf jars-staging-JavaCheck.jar -C javac_out/check .
-          jar cf jars-staging-NewLaunch.jar -C javac_out/newlaunch .
-          mkdir -p javac_out/legacy_src && cp -r libraries/launcher/legacy/* javac_out/legacy_src/ 2>/dev/null || true
-          cp libraries/launcher/net javac_out/ -R 2>/dev/null || true
-          (cd libraries/launcher && find legacy net -name "*.java" > ../legacy.srcs)
-          javac -cp jars-staging-NewLaunch.jar -d javac_out/legacy @legacy.srcs -sourcepath libraries/launcher
-          jar cf jars-staging-NewLaunchLegacy.jar -C javac_out/newlaunch . -C javac_out/legacy .
+          set -e
+          JROOT="$RUNNER_TEMP/javac"
+          mkdir -p "$JROOT/check" "$JROOT/newlaunch" "$JROOT/legacy" "$JROOT/legacy_src"
+          # release 8 first, fall back to 11 on newer JDKs
+          REL="--release 8"
+          javac $REL -d "$JROOT/check" libraries/javacheck/JavaCheck.java || REL="--release 11"
+          javac $REL -d "$JROOT/check" libraries/javacheck/JavaCheck.java
+          # NewLaunch: every non-legacy launcher source
+          (cd libraries/launcher && find org -name "*.java") > "$JROOT/newlaunch.srcs"
+          sed -i '' 's|^|libraries/launcher/|' "$JROOT/newlaunch.srcs"
+          javac $REL -d "$JROOT/newlaunch" @"$JROOT/newlaunch.srcs"
+          jar cf "$JROOT/NewLaunch.jar" -C "$JROOT/newlaunch" .
+          # NewLaunchLegacy: legacy sources compiled against NewLaunch
+          (cd libraries/launcher && find legacy -name "*.java") > "$JROOT/legacy.srcs"
+          sed -i '' 's|^|libraries/launcher/|' "$JROOT/legacy.srcs"
+          javac $REL -cp "$JROOT/NewLaunch.jar" -d "$JROOT/legacy" @"$JROOT/legacy.srcs"
+          jar cf "$JROOT/NewLaunchLegacy.jar" -C "$JROOT/newlaunch" . -C "$JROOT/legacy" .
+          jar cf "$JROOT/JavaCheck.jar" -C "$JROOT/check" .
+          ls -la "$JROOT" | grep jar
 
       - name: Bundle the app
         shell: bash
@@ -95,9 +102,9 @@ jobs:
           cp -r rust/assets/fonts "$APP/Contents/Resources/fonts"
           mkdir -p "$APP/Contents/Resources/instance_icons"
           cp rust/assets/instance_icons/* "$APP/Contents/Resources/instance_icons/" || true
-          cp jars-staging-NewLaunch.jar "$APP/Contents/Resources/jars/NewLaunch.jar"
-          cp jars-staging-NewLaunchLegacy.jar "$APP/Contents/Resources/jars/NewLaunchLegacy.jar"
-          cp jars-staging-JavaCheck.jar "$APP/Contents/Resources/jars/JavaCheck.jar"
+          cp "$RUNNER_TEMP/javac/NewLaunch.jar" "$APP/Contents/Resources/jars/NewLaunch.jar"
+          cp "$RUNNER_TEMP/javac/NewLaunchLegacy.jar" "$APP/Contents/Resources/jars/NewLaunchLegacy.jar"
+          cp "$RUNNER_TEMP/javac/JavaCheck.jar" "$APP/Contents/Resources/jars/JavaCheck.jar"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
