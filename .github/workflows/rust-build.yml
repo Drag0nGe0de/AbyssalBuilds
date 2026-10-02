@@ -85,7 +85,9 @@ jobs:
           (cd libraries/launcher && find legacy -name "*.java") > "$JROOT/legacy.srcs"
           sed -i '' 's|^|libraries/launcher/|' "$JROOT/legacy.srcs"
           javac $REL -cp "$JROOT/NewLaunch.jar" -d "$JROOT/legacy" @"$JROOT/legacy.srcs"
-          jar cf "$JROOT/NewLaunchLegacy.jar" -C "$JROOT/newlaunch" . -C "$JROOT/legacy" .
+          # legacy jar = NewLaunch classes + legacy overlay (jar uf overwrites dupes)
+          cp "$JROOT/NewLaunch.jar" "$JROOT/NewLaunchLegacy.jar"
+          jar uf "$JROOT/NewLaunchLegacy.jar" -C "$JROOT/legacy" .
           jar cf "$JROOT/JavaCheck.jar" -C "$JROOT/check" .
           ls -la "$JROOT" | grep jar
 
