@@ -45,6 +45,14 @@ jobs:
         working-directory: source/rust
         run: cargo test --locked
 
+      - name: Upload golden captures (QA forensics)
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-captures
+          path: source/rust/target/golden/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Build (arm64)
         shell: bash
         working-directory: source/rust
@@ -151,6 +159,16 @@ jobs:
           sleep 1
           echo "Launcher RSS: ${RSS_KB:-unknown} KB"
 
+      - name: Zip the app bundle (fast no-mount artifact)
+        shell: bash
+        working-directory: source
+        run: |
+          TAG="${{ inputs.tag }}"
+          OUT="AbyssalLauncher-${TAG}-macOS-universal.zip"
+          ditto -c -k --keepParent "Abyssal Launcher.app" "$OUT"
+          shasum -a 256 "$OUT" > "$OUT.sha256"
+          echo "ZIP=$OUT" >> "$GITHUB_ENV"
+
       - name: Package the dmg (with Applications symlink)
         shell: bash
         working-directory: source
@@ -171,6 +189,8 @@ jobs:
         with:
           name: rust-build-output
           path: |
+            source/${{ env.ZIP }}
+            source/${{ env.ZIP }}.sha256
             source/${{ env.DMG }}
             source/${{ env.DMG }}.sha256
           if-no-files-found: error
