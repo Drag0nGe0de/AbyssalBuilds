@@ -45,6 +45,11 @@ jobs:
         working-directory: source/rust
         run: cargo test --locked
 
+      - name: Clippy panic-free lints
+        shell: bash
+        working-directory: source/rust
+        run: cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
+
       - name: Upload golden captures (QA forensics)
         uses: actions/upload-artifact@v4
         with:
